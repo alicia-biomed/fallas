@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Registro de falla</title>
+<style>
+  :root { --rojo:#c0392b; --verde:#1e8449; --ambar:#b9770e; --gris:#555; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:-apple-system, system-ui, "Segoe UI", Roboto, sans-serif;
+         background:#fff; color:#222; text-align:center; }
+  main { max-width:480px; margin:0 auto; padding:48px 20px; }
+  .icono { font-size:64px; line-height:1; margin-bottom:12px; }
+  h1 { margin:0 0 16px; font-size:30px; }
+  .equipo { font-size:24px; font-weight:700; margin:8px 0; }
+  .codigo { font-size:15px; color:var(--gris); margin:4px 0 16px; }
+  .hora { font-size:18px; color:var(--gris); margin:8px 0; }
+  .nota { font-size:16px; color:#777; margin-top:36px; line-height:1.4; }
+  .pend { font-size:14px; color:var(--ambar); margin-top:20px; }
+  .ok h1 { color:var(--verde); } .err h1 { color:var(--ambar); } .wait h1 { color:var(--rojo); }
+</style>
+</head>
+<body>
+<main id="app" class="wait">
+  <div class="icono" id="icono">⏳</div>
+  <h1 id="titulo">Registrando falla…</h1>
+  <div class="equipo" id="equipo"></div>
+  <div class="codigo" id="codigo"></div>
+  <div class="hora" id="hora"></div>
+  <div class="nota" id="nota"></div>
+  <div class="pend" id="pend"></div>
+</main>
+<script>
+// ====== CONFIGURACIÓN ======
+const API = 'https://script.google.com/macros/s/AKfycbzyGEVoBruGQRvSAP0iVzhhR16HJSm3Qtz_a04lRH7PvEANmicHBbOV0jLNVzbGwDgvnA/exec';
+const TEXTO_CIERRE = 'Gracias. Ya puede cerrar esta ventana.';
+const MINUTOS_SIN_REPETIR = 2;   // evita duplicados si se escanea dos veces seguidas
+// ===========================
+
+const COLA = 'colaFallas';
+const $ = id => document.getElementById(id);
+
+function leer(clave, def) { try { const v = localStorage.getItem(clave); return v ? JSON.parse(v) : def; } catch (e) { return def; } }
+function escribir(clave, v) { try { localStorage.setItem(clave, JSON.stringify(v)); } catch (e) {} }
+function leerSesion(clave) { try { return sessionStorage.getItem(clave); } catch (e) { return null; } }
+function escribirSesion(clave, v) { try { sessionStorage.setItem(clave, v); } catch (e) {} }
+
+function nuevoId() {
+  if (window.crypto && crypto.randomUUID) return crypto.randomUUID().replace(/-/g, '');
+  return Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
+}
+function formatoHora(t) {
+  return new Date(t).toLocaleString('es-MX', { day:'2-digit', month:'2-digit', year:'numeric',
+                                                hour:'2-digit', minute:'2-digit' });
+}
+
+function pantalla(estado, titulo, icono, nota) {
+  $('app').className = estado; $('titulo').textContent = titulo;
+  $('icono').textContent = icono; $('nota').textContent = nota || '';
+}
+function mostrarPendientes() {
+  const n = leer(COLA, []).length;
+  $('pend').textContent = n > 1 ? ('Reportes pendientes de enviar en este teléfono: ' + n) : '';
+}
+
+async function enviar(item) {
+  const url = API + '?api=1&equipo=' + encodeURIComponent(item.codigo) +
+              '&t=' + item.t + '&id=' + item.id;
+  try {
+    // Sin cookies ni sesión de Google (como en modo incógnito)
+    const r = await fetch(url, { credentials:'omit', cache:'no-store', redirect:'follow' });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const datos = await r.json();
+    return datos;
+  } catch (e) {
+    // Segundo intento sin leer la respuesta; si llega al servidor, el ID evita duplicados
+    await fetch(url, { mode:'no-cors', credentials:'omit', cache:'no-store' });
+    return { ok:true };
+  }
+}
+
+let enviando = false;
+async function vaciarCola() {
+  if (enviando) return;
+  enviando = true;
+  try {
+    let cola = leer(COLA, []);
+    for (const item of cola.slice()) {
+      try {
+        const res = await enviar(item);
+        cola = leer(COLA, []).filter(x => x.id !== item.id);
+        escribir(COLA, cola);
+        if (item.id === actual) {
+          if (res.equipo) $('equipo').textContent = res.equipo;
+          pantalla('ok', 'Falla registrada', '✅', TEXTO_CIERRE);
+          escribirSesion('estado_' + actual, 'ok');
+        }
+      } catch (e) {
+        if (item.id === actual) {
+          pantalla('err', 'Sin conexión', '📶',
+            'El reporte quedó guardado en este teléfono con la hora del escaneo. ' +
+            'Se enviará solo en cuanto haya internet: deje esta ventana abierta ' +
+            'o escanee cualquier QR más tarde.');
+        }
+        break;
+      }
+    }
+  } finally {
+    enviando = false;
+    mostrarPendientes();
+  }
+}
+
+// ---- Inicio ----
+const params = new URLSearchParams(location.search);
+const codigo = (params.get('equipo') || '').toUpperCase().replace(/[^A-Z0-9_-]/g, '');
+let actual = null;
+
+if (!codigo) {
+  pantalla('err', 'Código no válido', '⚠️', 'Este enlace no incluye el código del equipo.');
+  vaciarCola();
+} else {
+  $('codigo').textContent = codigo;
+  const claveSesion = 'escaneo_' + location.search;
+  const previo = leerSesion(claveSesion);
+
+  if (previo) {
+    // Recarga o regreso a la misma página: no se crea un reporte nuevo
+    const p = JSON.parse(previo);
+    actual = p.id;
+    $('hora').textContent = 'Escaneado: ' + formatoHora(p.t);
+    if (leerSesion('estado_' + actual) === 'ok') pantalla('ok', 'Falla registrada', '✅', TEXTO_CIERRE);
+  } else {
+    const ultimos = leer('ultimos', {});
+    const ahora = Date.now();
+    if (ultimos[codigo] && ahora - ultimos[codigo] < MINUTOS_SIN_REPETIR * 60000) {
+      pantalla('ok', 'Ya registrada', '✅',
+        'Esta falla se registró hace un momento desde este teléfono. ' + TEXTO_CIERRE);
+      $('hora').textContent = 'Escaneado: ' + formatoHora(ultimos[codigo]);
+    } else {
+      const item = { codigo: codigo, t: ahora, id: nuevoId() };
+      actual = item.id;
+      const cola = leer(COLA, []); cola.push(item); escribir(COLA, cola);
+      ultimos[codigo] = ahora; escribir('ultimos', ultimos);
+      escribirSesion(claveSesion, JSON.stringify(item));
+      $('hora').textContent = 'Escaneado: ' + formatoHora(ahora);
+    }
+  }
+  vaciarCola();
+}
+
+// Reintentos automáticos mientras la ventana siga abierta
+window.addEventListener('online', vaciarCola);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) vaciarCola(); });
+setInterval(() => { if (leer(COLA, []).length) vaciarCola(); }, 15000);
+</script>
+</body>
+</html>
