@@ -33,12 +33,13 @@
   .enlace { background:none; color:var(--gris); font-size:14px; font-weight:400; text-decoration:underline;
             padding:8px; margin-top:24px; }
   [hidden] { display:none !important; }
+  .ver { position:fixed; bottom:6px; right:10px; font-size:11px; color:#bbb; }
 </style>
 </head>
 <body>
 <main id="app" class="wait">
   <div class="icono" id="icono">⏳</div>
-  <h1 id="titulo">Registrando falla…</h1>
+  <h1 id="titulo">Cargando…</h1>
   <div class="equipo" id="equipo"></div>
   <div class="codigo" id="codigo"></div>
   <div class="hora" id="hora"></div>
@@ -56,6 +57,17 @@
   <div class="pend" id="pend"></div>
   <button class="enlace" id="olvidar" hidden>¿No es usted? Borrar la clave guardada en este teléfono</button>
 </main>
+<div class="ver">v3 · clave</div>
+<script>
+// Aviso si el código principal no se ejecuta (por ejemplo, por un error al editar)
+setTimeout(function () {
+  if (!window.__paginaOk) {
+    document.getElementById("titulo").textContent = "Error en la página";
+    document.getElementById("icono").textContent = "⚠️";
+    document.getElementById("nota").textContent = "El código de la página tiene un error. Avise a Ingeniería Biomédica.";
+  }
+}, 2500);
+</script>
 <script>
 // ====== CONFIGURACIÓN ======
 // Webhook de Make.com (funciona en la red del hospital). Pega aquí tu URL entre las comillas:
@@ -66,7 +78,9 @@ const TEXTO_CIERRE = 'Gracias. Ya puede cerrar esta ventana.';
 const MINUTOS_SIN_REPETIR = 2;   // evita duplicados si se escanea dos veces seguidas
 // ===========================
 
-const COLA = 'colaFallas', CLAVE = 'clavePersonal';
+window.__paginaOk = true;
+try { ['colaFallas', 'ultimos', 'clavePersonal'].forEach(k => localStorage.removeItem(k)); } catch (e) {}
+const COLA = 'v3_cola', CLAVE = 'v3_clave', ULTIMOS = 'v3_ultimos';
 const $ = id => document.getElementById(id);
 
 function leer(k, def) { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : def; } catch (e) { return def; } }
@@ -131,7 +145,9 @@ async function vaciarCola() {
   if (enviando) return;
   enviando = true;
   try {
-    for (const item of leer(COLA, []).slice()) {
+    const cola = leer(COLA, []);
+    cola.sort((a, b) => (b.id === actual) - (a.id === actual));
+    for (const item of cola) {
       let res;
       try { res = await enviar(item); }
       catch (e) {
@@ -148,14 +164,14 @@ async function vaciarCola() {
         if (item.id === actual) {
           if (res.equipo) $('equipo').textContent = res.equipo;
           if (res.personal) $('quien').textContent = 'Reportado por: ' + res.personal;
-          escribirSesion('estado_' + actual, 'ok');
+          escribirSesion('v3_estado_' + actual, 'ok');
           pantalla('ok', 'Falla registrada', '✅', TEXTO_CIERRE);
         }
       } else {
         // Clave rechazada: no se registra y se olvida la clave guardada
         if (leer(CLAVE, '') === item.clave) borrar(CLAVE);
         if (item.id === actual) {
-          escribirSesion('estado_' + actual, 'clave');
+          escribirSesion('v3_estado_' + actual, 'clave');
           pedirClave('Clave incorrecta. Verifíquela e intente de nuevo.');
         }
       }
@@ -169,8 +185,8 @@ async function vaciarCola() {
 function encolar(clave) {
   const item = { codigo: escaneo.codigo, t: escaneo.t, id: escaneo.id, clave: clave };
   escribir(COLA, leer(COLA, []).filter(x => x.id !== item.id).concat([item]));
-  const ultimos = leer('ultimos', {}); ultimos[escaneo.codigo] = escaneo.t; escribir('ultimos', ultimos);
-  escribirSesion('estado_' + actual, 'enviando');
+  const ultimos = leer(ULTIMOS, {}); ultimos[escaneo.codigo] = escaneo.t; escribir(ULTIMOS, ultimos);
+  escribirSesion('v3_estado_' + actual, 'enviando');
   pantalla('wait', 'Registrando falla…', '⏳', '');
   vaciarCola();
 }
@@ -198,14 +214,14 @@ if (!codigo) {
   vaciarCola();
 } else {
   $('codigo').textContent = codigo;
-  const claveSesion = 'escaneo_' + location.search;
+  const claveSesion = 'v3_escaneo_' + location.search;
   const previo = leerSesion(claveSesion);
 
   if (previo) {
     // Recarga o regreso a la misma página: se conserva la hora del escaneo original
     escaneo = JSON.parse(previo); actual = escaneo.id;
   } else {
-    const ultimos = leer('ultimos', {});
+    const ultimos = leer(ULTIMOS, {});
     const ahora = Date.now();
     if (ultimos[codigo] && ahora - ultimos[codigo] < MINUTOS_SIN_REPETIR * 60000) {
       pantalla('ok', 'Ya registrada', '✅',
@@ -219,7 +235,7 @@ if (!codigo) {
 
   if (escaneo) {
     $('hora').textContent = 'Escaneado: ' + formatoHora(escaneo.t);
-    const estado = leerSesion('estado_' + actual);
+    const estado = leerSesion('v3_estado_' + actual);
     const enCola = leer(COLA, []).some(x => x.id === actual);
     if (estado === 'ok') {
       pantalla('ok', 'Falla registrada', '✅', TEXTO_CIERRE);
