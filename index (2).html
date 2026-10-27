@@ -1,0 +1,242 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Registro de falla</title>
+<style>
+  :root { --rojo:#c0392b; --verde:#1e8449; --ambar:#b9770e; --gris:#555; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:-apple-system, system-ui, "Segoe UI", Roboto, sans-serif;
+         background:#fff; color:#222; text-align:center; }
+  main { max-width:480px; margin:0 auto; padding:40px 20px; }
+  .icono { font-size:60px; line-height:1; margin-bottom:12px; }
+  h1 { margin:0 0 16px; font-size:28px; }
+  .equipo { font-size:24px; font-weight:700; margin:8px 0; }
+  .codigo { font-size:15px; color:var(--gris); margin:4px 0 12px; }
+  .hora { font-size:17px; color:var(--gris); margin:8px 0; }
+  .quien { font-size:15px; color:var(--gris); margin:6px 0; }
+  .nota { font-size:16px; color:#777; margin-top:28px; line-height:1.4; }
+  .pend { font-size:14px; color:var(--ambar); margin-top:20px; }
+  .ok h1 { color:var(--verde); } .err h1 { color:var(--ambar); } .wait h1, .clave h1 { color:var(--rojo); }
+  form { margin-top:24px; text-align:left; }
+  label.t { display:block; font-size:16px; font-weight:600; margin-bottom:8px; }
+  input[type=password] { width:100%; font-size:24px; padding:12px 14px; border:2px solid #ccc;
+          border-radius:10px; letter-spacing:2px; }
+  input[type=password]:focus { outline:none; border-color:var(--rojo); }
+  .check { display:flex; align-items:center; gap:10px; margin:14px 0 6px; font-size:15px; color:var(--gris); }
+  .check input { width:22px; height:22px; }
+  .error { color:var(--rojo); font-size:15px; min-height:20px; margin-top:6px; }
+  button { width:100%; margin-top:14px; padding:15px; font-size:18px; font-weight:600; border:0;
+           border-radius:10px; background:var(--rojo); color:#fff; }
+  .enlace { background:none; color:var(--gris); font-size:14px; font-weight:400; text-decoration:underline;
+            padding:8px; margin-top:24px; }
+  [hidden] { display:none !important; }
+</style>
+</head>
+<body>
+<main id="app" class="wait">
+  <div class="icono" id="icono">⏳</div>
+  <h1 id="titulo">Registrando falla…</h1>
+  <div class="equipo" id="equipo"></div>
+  <div class="codigo" id="codigo"></div>
+  <div class="hora" id="hora"></div>
+  <div class="quien" id="quien"></div>
+
+  <form id="form" hidden autocomplete="off">
+    <label class="t" for="clave">Clave de Biomédica</label>
+    <input id="clave" type="password" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" maxlength="20" required>
+    <label class="check"><input type="checkbox" id="recordar" checked> Recordar mi clave en este teléfono</label>
+    <div class="error" id="error"></div>
+    <button type="submit">Registrar falla</button>
+  </form>
+
+  <div class="nota" id="nota"></div>
+  <div class="pend" id="pend"></div>
+  <button class="enlace" id="olvidar" hidden>¿No es usted? Borrar la clave guardada en este teléfono</button>
+</main>
+<script>
+// ====== CONFIGURACIÓN ======
+// Webhook de Make.com (funciona en la red del hospital). Pega aquí tu URL entre las comillas:
+const MAKE = 'PEGA_AQUI_TU_WEBHOOK_DE_MAKE';
+// Apps Script directo (respaldo; funciona fuera del hospital)
+const API = 'https://script.google.com/macros/s/AKfycbzyGEVoBruGQRvSAP0iVzhhR16HJSm3Qtz_a04lRH7PvEANmicHBbOV0jLNVzbGwDgvnA/exec';
+const TEXTO_CIERRE = 'Gracias. Ya puede cerrar esta ventana.';
+const MINUTOS_SIN_REPETIR = 2;   // evita duplicados si se escanea dos veces seguidas
+// ===========================
+
+const COLA = 'colaFallas', CLAVE = 'clavePersonal';
+const $ = id => document.getElementById(id);
+
+function leer(k, def) { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : def; } catch (e) { return def; } }
+function escribir(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }
+function borrar(k) { try { localStorage.removeItem(k); } catch (e) {} }
+function leerSesion(k) { try { return sessionStorage.getItem(k); } catch (e) { return null; } }
+function escribirSesion(k, v) { try { sessionStorage.setItem(k, v); } catch (e) {} }
+
+function nuevoId() {
+  if (window.crypto && crypto.randomUUID) return crypto.randomUUID().replace(/-/g, '');
+  return Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
+}
+function limpiarClave(c) { return String(c || '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 20); }
+function formatoHora(t) {
+  return new Date(t).toLocaleString('es-MX', { day:'2-digit', month:'2-digit', year:'numeric',
+                                                hour:'2-digit', minute:'2-digit' });
+}
+
+function pantalla(estado, titulo, icono, nota) {
+  $('app').className = estado; $('titulo').textContent = titulo;
+  $('icono').textContent = icono; $('nota').textContent = nota || '';
+  $('form').hidden = (estado !== 'clave');
+  $('olvidar').hidden = !(estado === 'ok' && leer(CLAVE, ''));
+}
+function mostrarPendientes() {
+  const n = leer(COLA, []).length;
+  $('pend').textContent = n > 1 ? ('Reportes pendientes de enviar en este teléfono: ' + n) : '';
+}
+function pedirClave(mensajeError) {
+  pantalla('clave', 'Reportar falla', '🔒', '');
+  $('error').textContent = mensajeError || '';
+  $('clave').value = '';
+  setTimeout(() => $('clave').focus(), 50);
+}
+
+function conTiempo(url, ms) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), ms);
+  return fetch(url, { credentials:'omit', cache:'no-store', redirect:'follow', signal: ctrl.signal })
+    .finally(() => clearTimeout(timer));
+}
+
+async function enviar(item) {
+  const q = '?api=1&equipo=' + encodeURIComponent(item.codigo) + '&t=' + item.t +
+            '&id=' + item.id + '&clave=' + encodeURIComponent(item.clave);
+  const destinos = [];
+  if (MAKE.startsWith('https://')) destinos.push(MAKE + q);
+  destinos.push(API + q);
+  for (const url of destinos) {
+    try {
+      const r = await conTiempo(url, 12000);
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const datos = await r.json();
+      if (datos && (datos.ok || datos.error)) return datos;
+    } catch (e) { /* probar el siguiente destino */ }
+  }
+  throw new Error('sin conexión');
+}
+
+let enviando = false;
+async function vaciarCola() {
+  if (enviando) return;
+  enviando = true;
+  try {
+    for (const item of leer(COLA, []).slice()) {
+      let res;
+      try { res = await enviar(item); }
+      catch (e) {
+        if (item.id === actual) {
+          pantalla('err', 'Sin conexión', '📶',
+            'El reporte quedó guardado en este teléfono con la hora del escaneo. ' +
+            'Se enviará solo en cuanto haya internet: deje esta ventana abierta ' +
+            'o escanee cualquier QR más tarde.');
+        }
+        break;
+      }
+      escribir(COLA, leer(COLA, []).filter(x => x.id !== item.id));
+      if (res.ok) {
+        if (item.id === actual) {
+          if (res.equipo) $('equipo').textContent = res.equipo;
+          if (res.personal) $('quien').textContent = 'Reportado por: ' + res.personal;
+          escribirSesion('estado_' + actual, 'ok');
+          pantalla('ok', 'Falla registrada', '✅', TEXTO_CIERRE);
+        }
+      } else {
+        // Clave rechazada: no se registra y se olvida la clave guardada
+        if (leer(CLAVE, '') === item.clave) borrar(CLAVE);
+        if (item.id === actual) {
+          escribirSesion('estado_' + actual, 'clave');
+          pedirClave('Clave incorrecta. Verifíquela e intente de nuevo.');
+        }
+      }
+    }
+  } finally {
+    enviando = false;
+    mostrarPendientes();
+  }
+}
+
+function encolar(clave) {
+  const item = { codigo: escaneo.codigo, t: escaneo.t, id: escaneo.id, clave: clave };
+  escribir(COLA, leer(COLA, []).filter(x => x.id !== item.id).concat([item]));
+  const ultimos = leer('ultimos', {}); ultimos[escaneo.codigo] = escaneo.t; escribir('ultimos', ultimos);
+  escribirSesion('estado_' + actual, 'enviando');
+  pantalla('wait', 'Registrando falla…', '⏳', '');
+  vaciarCola();
+}
+
+// ---- Inicio ----
+const params = new URLSearchParams(location.search);
+const codigo = (params.get('equipo') || '').toUpperCase().replace(/[^A-Z0-9_-]/g, '');
+let actual = null, escaneo = null;
+
+$('form').addEventListener('submit', ev => {
+  ev.preventDefault();
+  const c = limpiarClave($('clave').value);
+  if (!c) { $('error').textContent = 'Escriba su clave.'; return; }
+  if ($('recordar').checked) escribir(CLAVE, c); else borrar(CLAVE);
+  encolar(c);
+});
+$('olvidar').addEventListener('click', () => {
+  borrar(CLAVE);
+  $('olvidar').hidden = true;
+  $('quien').textContent = 'La clave se borró de este teléfono.';
+});
+
+if (!codigo) {
+  pantalla('err', 'Código no válido', '⚠️', 'Este enlace no incluye el código del equipo.');
+  vaciarCola();
+} else {
+  $('codigo').textContent = codigo;
+  const claveSesion = 'escaneo_' + location.search;
+  const previo = leerSesion(claveSesion);
+
+  if (previo) {
+    // Recarga o regreso a la misma página: se conserva la hora del escaneo original
+    escaneo = JSON.parse(previo); actual = escaneo.id;
+  } else {
+    const ultimos = leer('ultimos', {});
+    const ahora = Date.now();
+    if (ultimos[codigo] && ahora - ultimos[codigo] < MINUTOS_SIN_REPETIR * 60000) {
+      pantalla('ok', 'Ya registrada', '✅',
+        'Esta falla se registró hace un momento desde este teléfono. ' + TEXTO_CIERRE);
+      $('hora').textContent = 'Escaneado: ' + formatoHora(ultimos[codigo]);
+    } else {
+      escaneo = { codigo: codigo, t: ahora, id: nuevoId() }; actual = escaneo.id;
+      escribirSesion(claveSesion, JSON.stringify(escaneo));
+    }
+  }
+
+  if (escaneo) {
+    $('hora').textContent = 'Escaneado: ' + formatoHora(escaneo.t);
+    const estado = leerSesion('estado_' + actual);
+    const enCola = leer(COLA, []).some(x => x.id === actual);
+    if (estado === 'ok') {
+      pantalla('ok', 'Falla registrada', '✅', TEXTO_CIERRE);
+    } else if (enCola) {
+      pantalla('wait', 'Registrando falla…', '⏳', '');
+    } else {
+      const guardada = leer(CLAVE, '');
+      if (guardada && estado !== 'clave') encolar(guardada); else pedirClave();
+    }
+  }
+  vaciarCola();
+}
+
+// Reintentos automáticos mientras la ventana siga abierta
+window.addEventListener('online', vaciarCola);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) vaciarCola(); });
+setInterval(() => { if (leer(COLA, []).length) vaciarCola(); }, 30000);
+</script>
+</body>
+</html>
