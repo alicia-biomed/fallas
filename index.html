@@ -33,6 +33,9 @@
 </main>
 <script>
 // ====== CONFIGURACIÓN ======
+// Webhook de Make.com (funciona en la red del hospital). Pega aquí tu URL entre las comillas:
+const MAKE = 'PEGA_AQUI_TU_WEBHOOK_DE_MAKE';
+// Apps Script directo (respaldo; funciona fuera del hospital)
 const API = 'https://script.google.com/macros/s/AKfycbzyGEVoBruGQRvSAP0iVzhhR16HJSm3Qtz_a04lRH7PvEANmicHBbOV0jLNVzbGwDgvnA/exec';
 const TEXTO_CIERRE = 'Gracias. Ya puede cerrar esta ventana.';
 const MINUTOS_SIN_REPETIR = 2;   // evita duplicados si se escanea dos veces seguidas
@@ -64,20 +67,28 @@ function mostrarPendientes() {
   $('pend').textContent = n > 1 ? ('Reportes pendientes de enviar en este teléfono: ' + n) : '';
 }
 
+function conTiempo(url, ms) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), ms);
+  return fetch(url, { credentials:'omit', cache:'no-store', redirect:'follow', signal: ctrl.signal })
+    .finally(() => clearTimeout(timer));
+}
+
 async function enviar(item) {
-  const url = API + '?api=1&equipo=' + encodeURIComponent(item.codigo) +
-              '&t=' + item.t + '&id=' + item.id;
-  try {
-    // Sin cookies ni sesión de Google (como en modo incógnito)
-    const r = await fetch(url, { credentials:'omit', cache:'no-store', redirect:'follow' });
-    if (!r.ok) throw new Error('HTTP ' + r.status);
-    const datos = await r.json();
-    return datos;
-  } catch (e) {
-    // Segundo intento sin leer la respuesta; si llega al servidor, el ID evita duplicados
-    await fetch(url, { mode:'no-cors', credentials:'omit', cache:'no-store' });
-    return { ok:true };
+  const q = '?api=1&equipo=' + encodeURIComponent(item.codigo) + '&t=' + item.t + '&id=' + item.id;
+  const destinos = [];
+  if (MAKE.startsWith('https://')) destinos.push(MAKE + q);
+  destinos.push(API + q);
+  for (const url of destinos) {
+    try {
+      // Sin cookies ni sesión de Google; el ID evita duplicados si llega dos veces
+      const r = await conTiempo(url, 12000);
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const datos = await r.json();
+      if (datos && datos.ok) return datos;
+    } catch (e) { /* probar el siguiente destino */ }
   }
+  throw new Error('sin conexión');
 }
 
 let enviando = false;
@@ -153,7 +164,7 @@ if (!codigo) {
 // Reintentos automáticos mientras la ventana siga abierta
 window.addEventListener('online', vaciarCola);
 document.addEventListener('visibilitychange', () => { if (!document.hidden) vaciarCola(); });
-setInterval(() => { if (leer(COLA, []).length) vaciarCola(); }, 15000);
+setInterval(() => { if (leer(COLA, []).length) vaciarCola(); }, 30000);
 </script>
 </body>
 </html>
