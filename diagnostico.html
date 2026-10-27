@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Diagnóstico de red</title>
+<style>
+  body { margin:0; font-family:-apple-system, system-ui, "Segoe UI", Roboto, sans-serif; background:#fff; color:#222; }
+  main { max-width:520px; margin:0 auto; padding:24px 16px 48px; }
+  h1 { font-size:22px; margin:0 0 6px; }
+  p { color:#555; font-size:14px; margin:0 0 16px; line-height:1.4; }
+  table { width:100%; border-collapse:collapse; font-size:14px; }
+  td { padding:9px 6px; border-bottom:1px solid #e5e5e5; vertical-align:top; }
+  td.r { text-align:right; white-space:nowrap; font-weight:600; }
+  .ok { color:#1e8449; } .no { color:#c0392b; } .wait { color:#999; }
+  small { color:#888; display:block; font-weight:400; }
+  button { margin-top:20px; width:100%; padding:14px; font-size:16px; border:0; border-radius:10px;
+           background:#c0392b; color:#fff; }
+  #info { margin-top:16px; font-size:12px; color:#888; word-break:break-all; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Diagnóstico de red</h1>
+  <p>Abre esta página conectada al WiFi del hospital (datos móviles apagados). Espera a que todas las filas terminen y toma una captura de pantalla.</p>
+  <table id="tabla"></table>
+  <button id="btn">Repetir prueba</button>
+  <div id="info"></div>
+</main>
+<script>
+const API = 'https://script.google.com/macros/s/AKfycbzyGEVoBruGQRvSAP0iVzhhR16HJSm3Qtz_a04lRH7PvEANmicHBbOV0jLNVzbGwDgvnA/exec';
+
+const pruebas = [
+  { n:'1. Registro completo (Apps Script)', url: API + '?api=1&equipo=DIAGNOSTICO&id=diag' + Date.now(), cors:true },
+  { n:'2. script.google.com',              url:'https://script.google.com/' },
+  { n:'3. script.googleusercontent.com',   url:'https://script.googleusercontent.com/' },
+  { n:'4. docs.google.com (Google Forms)', url:'https://docs.google.com/forms/' },
+  { n:'5. www.google.com',                 url:'https://www.google.com/' },
+  { n:'6. googleapis.com',                 url:'https://sheets.googleapis.com/' },
+  { n:'7. Microsoft Forms',                url:'https://forms.office.com/' },
+  { n:'8. Make.com (webhooks)',            url:'https://hook.us1.make.com/' },
+  { n:'9. Cloudflare Workers',             url:'https://workers.cloudflare.com/' },
+  { n:'10. Supabase',                      url:'https://supabase.com/' },
+  { n:'11. GitHub API',                    url:'https://api.github.com/' },
+];
+
+function conTiempo(promesa, ms) {
+  return Promise.race([promesa, new Promise((_, rej) => setTimeout(() => rej(new Error('tiempo agotado')), ms))]);
+}
+
+async function probar(p, celda) {
+  const t0 = performance.now();
+  try {
+    if (p.cors) {
+      const r = await conTiempo(fetch(p.url, { credentials:'omit', cache:'no-store' }), 15000);
+      const j = await r.json();
+      if (!j.ok) throw new Error('respuesta inesperada');
+    } else {
+      await conTiempo(fetch(p.url, { mode:'no-cors', credentials:'omit', cache:'no-store' }), 15000);
+    }
+    const ms = Math.round(performance.now() - t0);
+    celda.className = 'r ok'; celda.innerHTML = '✅ OK<small>' + ms + ' ms</small>';
+  } catch (e) {
+    const ms = Math.round(performance.now() - t0);
+    celda.className = 'r no';
+    celda.innerHTML = '❌ Falla<small>' + (e.message === 'tiempo agotado' ? 'tiempo agotado' : 'bloqueado · ' + ms + ' ms') + '</small>';
+  }
+}
+
+async function correr() {
+  const tabla = document.getElementById('tabla');
+  tabla.innerHTML = '';
+  const celdas = pruebas.map(p => {
+    const tr = tabla.insertRow();
+    tr.insertCell().textContent = p.n;
+    const c = tr.insertCell(); c.className = 'r wait'; c.textContent = '…';
+    return c;
+  });
+  pruebas[0].url = API + '?api=1&equipo=DIAGNOSTICO&id=diag' + Date.now();
+  await Promise.all(pruebas.map((p, i) => probar(p, celdas[i])));
+  document.getElementById('info').textContent =
+    new Date().toLocaleString('es-MX') + ' · ' + navigator.userAgent;
+}
+document.getElementById('btn').onclick = correr;
+correr();
+</script>
+</body>
+</html>
